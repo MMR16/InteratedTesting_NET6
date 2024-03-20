@@ -1,5 +1,6 @@
 ﻿using Customers.Api;
 using Customers.Api.Database;
+using Docker.DotNet.Models;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Configurations;
 using DotNet.Testcontainers.Containers;
@@ -7,9 +8,13 @@ using FluentAssertions.Common;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Microsoft.Net.Http.Headers;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -40,8 +45,15 @@ namespace Customer.Api.Tests.Integrations
                      Password = "changeme"
                  }).Build();
 
+        private readonly GithubApiServer _gitHubApiServer = new();
+        public const string ThrotteldUser = "throttle";
+
         public async Task InitializeAsync()
         {
+            _gitHubApiServer.Start();
+            _gitHubApiServer.SetupUser("MMR16");
+            _gitHubApiServer.SetupThrottledUser(ThrotteldUser);
+
             await _dbContainer.StartAsync();
         }
 
@@ -57,14 +69,42 @@ namespace Customer.Api.Tests.Integrations
                 services.RemoveAll(typeof(IDbConnectionFactory));
                 services.AddSingleton<IDbConnectionFactory>(_ =>
                     new NpgsqlConnectionFactory(_dbContainer.ConnectionString));
+                services.AddHttpClient("GitHub", httpClient =>
+                {
+                    httpClient.BaseAddress = new Uri(_gitHubApiServer.Url);
+                    httpClient.DefaultRequestHeaders.Add(
+                        HeaderNames.Accept, "application/vnd.github.v3+json");
+                    httpClient.DefaultRequestHeaders.Add(
+                        HeaderNames.UserAgent, $"Course-{Environment.MachineName}");
+                });
+                services.RemoveAll(typeof(IHostedService));
+
+
+                // to test database using EF Core 
+                // remove the dbcontext that's registerd
+                //then we register new one
+                services.RemoveAll(typeof(AppDbContext));
+                services.AddSingleton<IDbConnectionFactory>(_ =>
+                 new NpgsqlConnectionFactory(_dbContainer.ConnectionString));
+
+                // we never use InMemory Database
+                //services.AddDbContext<AppDbContext>(
+                //    OptionsBuilder => OptionsBuilder.UseInMemoryDatabase()
+                //    ); 
 
             });
         }
 
         public new async Task DisposeAsync()
         {
+            _gitHubApiServer?.Dispose();
             await _dbContainer.DisposeAsync();
 
         }
+    }
+
+    public class AppDbContext : DbContext
+    {
+
     }
 }
